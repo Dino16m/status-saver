@@ -1,8 +1,10 @@
 package com.hiz.statussaver.ui.screens
 
+import android.R.attr.duration
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,7 +36,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
-import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -60,7 +61,6 @@ fun Home(modifier: Modifier) {
     val directoryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { treeUri: Uri? ->
-        // 2. Callback: Executed when the user selects a directory or cancels
         if (treeUri == null) {
             hasPerms = false
             return@rememberLauncherForActivityResult
@@ -76,7 +76,7 @@ fun Home(modifier: Modifier) {
                 Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
 
-            Log.d("MediaQuery", "Access granted to: ${treeUri}")
+            Log.d("MediaQuery", "Access granted to: $treeUri")
 
         } catch (e: Exception) {
             Log.d("MediaQuery", "An error occurred: ${e.message}")
@@ -84,14 +84,11 @@ fun Home(modifier: Modifier) {
         }
     }
 
-
-    // Run the query when the composable first loads
     LaunchedEffect(Unit) {
         if (!hasPerms) {
             directoryLauncher.launch(initialUri)
         }
     }
-
 
     if (hasPerms) {
         HomeContent(modifier = modifier, initialUri, context)
@@ -100,24 +97,57 @@ fun Home(modifier: Modifier) {
     }
 }
 
-fun getMediaItems(rootDocument: DocumentFile?): List<MediaItem> {
-    rootDocument?.lastModified()
-    val files = rootDocument?.listFiles()?.filter { it.isFile }?.toList()
-        ?: emptyList()
+fun fetchMediaItems(context: Context, rootUri: Uri): List<MediaItem> {
+    val mediaItems = mutableListOf<Pair<Long, MediaItem>>()
+    val contentResolver = context.contentResolver
 
-    files.forEach { it.lastModified() }
+    // 1. Prepare the Children URI
+    val documentId = DocumentsContract.getTreeDocumentId(rootUri)
+    val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(rootUri, documentId)
 
-    Log.d("MediaQuery", "Found ${files.size} files")
-    return files.stream().sorted { a, b -> b.lastModified().compareTo(a.lastModified()) }
-        .map { MediaItem(it.uri, it.name ?: "Unnamed", it.uri.path ?: "No path") }.toList()
+    // 2. Define the columns we want to fetch in one go
+    val projection = arrayOf(
+        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+        DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+        DocumentsContract.Document.COLUMN_MIME_TYPE
+    )
 
+    // 3. Query the ContentResolver
+    contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+        val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+        val nameIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+        val dateIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+        val mimeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+
+        while (cursor.moveToNext()) {
+            val mimeType = cursor.getString(mimeIndex)
+
+            if (mimeType != DocumentsContract.Document.MIME_TYPE_DIR) {
+                val docId = cursor.getString(idIndex)
+                val name = cursor.getString(nameIndex) ?: "Unnamed"
+                val lastModified = cursor.getLong(dateIndex)
+
+                // Build the full URI for the specific file
+                val fileUri = DocumentsContract.buildDocumentUriUsingTree(rootUri, docId)
+
+                mediaItems.add(
+                    Pair(lastModified,  MediaItem(
+                        uri = fileUri,
+                        name = name,
+                        path = fileUri.path ?: "No path",
+                    ))
+
+                )
+            }
+        }
+    }
+    return mediaItems.sortedByDescending { it.first }.map { it.second }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeContent(modifier: Modifier = Modifier, treeUri: Uri, context: Context) {
-
-    val rootDocument = DocumentFile.fromTreeUri(context, treeUri)
 
     val scope = rememberCoroutineScope()
 
@@ -137,10 +167,11 @@ fun HomeContent(modifier: Modifier = Modifier, treeUri: Uri, context: Context) {
     LaunchedEffect(Unit) {
         scope.launch(Dispatchers.IO) {
             isLoading = true
-            val initialMedia = getMediaItems(rootDocument)
+            val initialMedia = fetchMediaItems(context, treeUri)
             mediaItems.clear()
             mediaItems.addAll(initialMedia)
             isLoading = false
+            Log.d("MediaQuery", "Loaded ${initialMedia.size} items in $duration ms" )
         }
     }
     val onRefresh = {
@@ -148,7 +179,7 @@ fun HomeContent(modifier: Modifier = Modifier, treeUri: Uri, context: Context) {
             if (!isRefreshing) {
                 isRefreshing = true
                 Log.d("MediaQuery", "Refreshing media items...")
-                val updatedMedia = getMediaItems(rootDocument)
+                val updatedMedia = fetchMediaItems(context, treeUri)
                 Log.d("MediaQuery", "Found ${updatedMedia.size} items after refresh")
                 mediaItems.clear()
                 mediaItems.addAll(updatedMedia)

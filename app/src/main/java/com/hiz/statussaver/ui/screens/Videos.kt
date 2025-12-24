@@ -176,9 +176,7 @@ fun VideoPlayer(
             contentAlignment = Alignment.Center
         ) {
             PlayerSurface(
-                player, modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(9f / 16f)
+                player
             )
             if (controlsVisible) {
                 IconButton(
@@ -275,7 +273,7 @@ fun Videos(modifier: Modifier = Modifier, mediaItems: List<MediaItem> = emptyLis
                 selectedItem = item
             }
 
-            scope.launch() {
+            scope.launch {
                 videoMediaItems.forEach { it ->
                     if (it != item) {
                         it.stop()
@@ -333,7 +331,7 @@ fun Videos(modifier: Modifier = Modifier, mediaItems: List<MediaItem> = emptyLis
     ) {
 
         items(videoMediaItems) { video ->
-            val modifier = Modifier.clickable() {
+            val modifier = Modifier.clickable {
                 val index = videoMediaItems.indexOf(video)
                 scope.launch {
                     Log.d("MediaQuery", "Clicked on video at index: $index")
